@@ -21,6 +21,7 @@ import androidx.media3.common.Metadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
+import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
 import androidx.media3.common.text.Cue;
@@ -49,6 +50,7 @@ import tv.danmaku.ijk.media.player.AbstractMediaPlayer;
 import tv.danmaku.ijk.media.player.IMediaPlayer;
 import tv.danmaku.ijk.media.player.MediaInfo;
 import tv.danmaku.ijk.media.player.misc.IjkTrackInfo;
+import tv.danmaku.ijk.media.player.misc.ITrackInfo;
 
 
 /**
@@ -233,8 +235,71 @@ public class IjkExo2MediaPlayer extends AbstractMediaPlayer implements Player.Li
 
     @Override
     public IjkTrackInfo[] getTrackInfo() {
-        // TODO: implement
-        return null;
+        // 将 Media3 Tracks 映射为 IJK 风格的 IjkTrackInfo，
+        // 供上层（OrangePlayer 轨道 API 等）以统一方式枚举轨道。
+        // 注意：Media3 的轨道选择经 TrackSelector 的 TrackSelectionOverride
+        // 完成，selectTrack/deselectTrack 仍由上层适配器负责。
+        if (mCurrentTracks == null) {
+            return null;
+        }
+        java.util.List<IjkTrackInfo> result = new java.util.ArrayList<>();
+        for (Tracks.Group group : mCurrentTracks.getGroups()) {
+            // 仅枚举已被 renderer 支持的轨道组（isAdaptiveGroup 与 unsupported 由上层过滤）
+            int trackCount = group.getMediaTrackGroup().length;
+            for (int i = 0; i < trackCount; i++) {
+                Format format = group.getTrackFormat(i);
+                int trackType = mediaTypeToIjkTrackType(format.sampleMimeType);
+                if (trackType == ITrackInfo.MEDIA_TRACK_TYPE_UNKNOWN) {
+                    continue;
+                }
+                tv.danmaku.ijk.media.player.IjkMediaMeta.IjkStreamMeta meta =
+                        new tv.danmaku.ijk.media.player.IjkMediaMeta.IjkStreamMeta(result.size());
+                if (format.language != null) {
+                    meta.mMeta.putString("language", format.language);
+                }
+                if (format.label != null) {
+                    meta.mMeta.putString("title", format.label);
+                }
+                if (format.sampleMimeType != null) {
+                    meta.mMeta.putString("codec", format.sampleMimeType);
+                }
+                IjkTrackInfo info = new IjkTrackInfo(meta);
+                info.setTrackType(trackType);
+                result.add(info);
+            }
+        }
+        return result.isEmpty() ? null : result.toArray(new IjkTrackInfo[0]);
+    }
+
+    private static int mediaTypeToIjkTrackType(String sampleMimeType) {
+        if (sampleMimeType == null) {
+            return ITrackInfo.MEDIA_TRACK_TYPE_UNKNOWN;
+        }
+        if (sampleMimeType.startsWith("video/")) {
+            return ITrackInfo.MEDIA_TRACK_TYPE_VIDEO;
+        }
+        if (sampleMimeType.startsWith("audio/")) {
+            return ITrackInfo.MEDIA_TRACK_TYPE_AUDIO;
+        }
+        if (sampleMimeType.startsWith("text/")
+                || sampleMimeType.equals(MimeTypes.APPLICATION_SUBRIP)
+                || sampleMimeType.equals(MimeTypes.APPLICATION_TTML)) {
+            return ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE;
+        }
+        return ITrackInfo.MEDIA_TRACK_TYPE_UNKNOWN;
+    }
+
+    /**
+     * 内嵌/外挂字幕 Cue 回调监听器（由上层注册，用于把 Cue 渲染到自有字幕视图）
+     */
+    public interface OnCueListener {
+        void onCues(CueGroup cueGroup);
+    }
+
+    private OnCueListener mOnCueListener;
+
+    public void setOnCueListener(OnCueListener listener) {
+        mOnCueListener = listener;
     }
 
     @Override
@@ -308,7 +373,10 @@ public class IjkExo2MediaPlayer extends AbstractMediaPlayer implements Player.Li
 
     @Override
     public void onCues(CueGroup cueGroup) {
-
+        // 转发 Cue 到注册的监听器（内嵌/外挂字幕渲染）
+        if (mOnCueListener != null) {
+            mOnCueListener.onCues(cueGroup);
+        }
     }
 
     @Override
