@@ -465,11 +465,67 @@ public class IjkExo2MediaPlayer extends AbstractMediaPlayer implements Player.Li
                 if (mMediaSource == null) {
                     return;
                 }
-                mInternalPlayer.setMediaSource(mMediaSource);
+                MediaSource source = mMediaSource;
+                // 外挂字幕：合并为文本轨（Media3 Cue 渲染，支持 SRT/VTT/SSA/ASS 样式）
+                if (mExternalSubtitleUri != null && mExternalSubtitleMimeType != null) {
+                    try {
+                        source = new androidx.media3.exoplayer.source.MergingMediaSource(
+                                source, buildSubtitleMediaSource(mExternalSubtitleUri, mExternalSubtitleMimeType));
+                    } catch (Throwable t) {
+                        android.util.Log.w("IjkExo2MediaPlayer", "merge external subtitle failed", t);
+                    }
+                }
+                mInternalPlayer.setMediaSource(source);
                 mInternalPlayer.prepare();
                 mInternalPlayer.setPlayWhenReady(false);
             }
         });
+    }
+
+    /** 外挂字幕 Uri（prepareAsync 之前设置生效） */
+    private Uri mExternalSubtitleUri;
+    private String mExternalSubtitleMimeType;
+
+    /**
+     * 设置外挂字幕（在 prepareAsync 之前调用）。
+     * 经 MergingMediaSource 合并为文本轨，Cue 经 onCues 回调输出，
+     * 样式（含 ASS/SSA）由 Media3 SubtitleParser 处理。
+     */
+    public void setExternalSubtitle(Uri uri, String mimeType) {
+        mExternalSubtitleUri = uri;
+        mExternalSubtitleMimeType = mimeType;
+    }
+
+    /** 清除外挂字幕设置 */
+    public void clearExternalSubtitle() {
+        mExternalSubtitleUri = null;
+        mExternalSubtitleMimeType = null;
+    }
+
+    private MediaSource buildSubtitleMediaSource(Uri subtitleUri, String mimeType) {
+        // 参照 GSY demo GSYExoSubTitlePlayer.getTextSource：
+        // SubtitleExtractor + SubtitleParserFactory 构建 ProgressiveMediaSource
+        androidx.media3.common.Format format = new androidx.media3.common.Format.Builder()
+                .setSampleMimeType(mimeType)
+                .setLanguage(null)
+                .setSelectionFlags(C.SELECTION_FLAG_FORCED)
+                .build();
+        androidx.media3.datasource.DefaultHttpDataSource.Factory httpFactory =
+                new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                        .setAllowCrossProtocolRedirects(true)
+                        .setConnectTimeoutMs(50000)
+                        .setReadTimeoutMs(50000);
+        androidx.media3.extractor.text.SubtitleParser.Factory parserFactory =
+                new androidx.media3.extractor.text.DefaultSubtitleParserFactory();
+        androidx.media3.extractor.ExtractorsFactory extractorsFactory =
+                () -> new androidx.media3.extractor.Extractor[]{
+                        new androidx.media3.extractor.text.SubtitleExtractor(
+                                parserFactory.create(format), format)
+                };
+        return new androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(
+                new androidx.media3.datasource.DefaultDataSource.Factory(mAppContext, httpFactory),
+                extractorsFactory)
+                .createMediaSource(androidx.media3.common.MediaItem.fromUri(subtitleUri));
     }
 
     public String getOverrideExtension() {
